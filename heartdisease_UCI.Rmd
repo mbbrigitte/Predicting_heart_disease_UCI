@@ -1,0 +1,360 @@
+---
+title: "Heart Disease Cleveland data"
+author: Brigitte Mueller
+date: June 2016, 2016
+output:
+  md_document:
+    variant: markdown_github
+---
+
+```{r setup, echo=FALSE}
+#Function needed to convert classes of predictor values
+convert.magic <- function(obj,types){
+    for (i in 1:length(obj)){
+        FUN <- switch(types[i],character = as.character, 
+                                   numeric = as.numeric, 
+                                   factor = as.factor)
+        obj[,i] <- FUN(obj[,i])
+    }
+    obj
+}
+
+convert.names <- function(row){
+  row=gsub("sex1", "male", row)
+  row=gsub("thal7", "reversable defect thalassemia", row)
+  row=gsub("thal6", "fixed defect thalassemia", row)
+  row=gsub("cp4", "asymptomatic chest pain", row)
+  row=gsub("cp3", "non-anginal chest pain", row)
+  row=gsub("cp2", "atypical angina chest pain", row)
+  row=gsub("oldpeak", "ST depression from exercise", row)
+  row=gsub("thalach", "maximum heart rate achieved", row)
+  row=gsub("trestbps", "resting blood pressure", row)
+  row=gsub("ca2", "2 major vessels col/b fluoro., ca2", row)
+  row=gsub("ca1", "1 major vessel col/b fluoro., ca1", row)
+  row=gsub("slope2", "flat peak exercise ST segment", row)
+  row=gsub("slope1", "upsloping peak exercise ST segment", row)
+  row=gsub("slope3", "downsloping peak exercise ST segment", row)
+  row=gsub("chol", "serum cholestoral", row)
+  row=gsub("exang", "exercise induced angina", row)
+  row=gsub("restecg2", "restec: showing left ventricular hypertrophy
+                      by Estes criteria", row)
+  row=gsub("restecg1", "restec: having ST-T wave abnormality", row)
+  row=gsub("fbs1", "fasting blood sugar > 120 mg/dl", row)
+  }
+```
+
+# Heart disease prediction
+## Aim of analysis
+In the following document, 4 different machine learning algorithms to predict heart disease (angiographic disease status) are compared. For some algorithms, model parameters are tuned and the best model selected. The best results measured by AUC and accuracy are obtained from a logistic regression model (AUC 0.92, Accuracy 0.87),  followed by Gradient Boosting Machines. 
+From a set of 14 variables, the most important to predict heart failure are whether or not there is a reversable defect in Thalassemia followed by whether or not there is an occurrence of asymptomatic chest pain. 
+
+## Dataset:
+Nicely prepared heart disease data are available at [UCI](https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data). 
+The description of the database can be found [here](https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/heart-disease.names). The document mentions that previous work resulted in an accuracy of 74-77% for the preciction of heart disease using the cleveland data.
+
+
+
+Variable name  | Short desciption  | Variable name | Short description
+------------- | ------------- |-------------|------------------------
+age    | Age of patient        |thalach | maximum heart rate achieved
+sex       | Sex, 1 for male  | exang | exercise induced angina (1 yes)
+cp|chest pain | oldpeak | ST depression induc. ex.
+trestbps | resting blood pressure|slope|slope of peak exercise ST
+chol | serum cholesterol| ca | number of major vessel
+fbs|fasting blood sugar larger 120mg/dl (1 true)|thal | no explanation provided, but probably thalassemia (3 normal; 6 fixed defect; 7 reversable defect)
+restecg | resting electroc. result (1 anomality)|num |diagnosis of heart disease  (angiographic disease status)
+
+
+The variable we want to predict is __num__  with Value 0: < 50% diameter narrowing and Value 1: > 50% diameter narrowing. We 
+assume that every value with 0 means heart is okay, and 1,2,3,4 means heart disease.
+
+From the possible values the variables can take, it is evident that the following need to be dummified because the distances in the values is random:
+cp,thal, restecg, slope
+
+
+
+
+## Data preparation
+Load heart disease data and give columns names from the table above 
+
+
+```{r  message=FALSE, warning=FALSE}
+heart.data <- read.csv("https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data",header=FALSE,sep=",",na.strings = '?')
+names(heart.data) <- c( "age", "sex", "cp", "trestbps", "chol","fbs", "restecg",
+                   "thalach","exang", "oldpeak","slope", "ca", "thal", "num")
+```
+
+
+Get a quick idea of the data
+
+```{r  message=FALSE, warning=FALSE}
+head(heart.data,3)
+dim(heart.data)
+```
+
+
+
+Explore the data quickly, how many had heart attack, women or men, age?
+
+Values of num > 0 are cases of heart disease. Dummify some variables.
+```{r  message=FALSE, warning=FALSE}
+heart.data$num[heart.data$num > 0] <- 1
+barplot(table(heart.data$num),
+        main="Fate", col="black")
+
+# change a few predictor variables from integer to factors (make dummies)
+chclass <-c("numeric","factor","factor","numeric","numeric","factor","factor","numeric","factor","numeric","factor","factor","factor","factor")
+
+heart.data <- convert.magic(heart.data,chclass)
+
+heart = heart.data #add labels only for plot
+levels(heart$num) = c("No disease","Disease")
+levels(heart$sex) = c("female","male","")
+mosaicplot(heart$sex ~ heart$num, 
+           main="Fate by Gender", shade=FALSE,color=TRUE,
+           xlab="Gender", ylab="Heart disease")
+
+boxplot(heart$age ~ heart$num, 
+        main="Fate by Age",
+         ylab="Age",xlab="Heart disease")
+```
+
+Check for missing values - only 6 so just remove them.
+```{r  message=FALSE, warning=FALSE}
+s = sum(is.na(heart.data))
+heart.data <- na.omit(heart.data)
+#str(heart.data)
+```
+
+## Training and testing data for validation
+Split the data into Training (70%) and Testing (30%) data. Percentage of heart disease or not must be same in training and testing (which is handled by the R-library used here).
+
+```{r, message=FALSE, warning=FALSE}
+library(caret)
+set.seed(10)
+inTrainRows <- createDataPartition(heart.data$num,p=0.7,list=FALSE)
+trainData <- heart.data[inTrainRows,]
+testData <-  heart.data[-inTrainRows,]
+nrow(trainData)/(nrow(testData)+nrow(trainData)) #checking whether really 70% -> OK
+
+```
+
+
+## Predict with 4 different methods with different tuning parameters and compare best model of each method
+Results are going to be stored in variable AUC. AUC is the area under the ROC which represents the proportion of positive data points that are correctly considered as positive and the proportion of negative data points that are mistakenly considered as positive. We also store Accuracy which is true positive and true negative divided by all results.
+```{r}
+AUC = list()
+Accuracy = list()
+```
+
+
+### Logistic regression
+Only one model
+```{r, message=FALSE, warning=FALSE}
+set.seed(10)
+logRegModel <- train(num ~ ., data=trainData, method = 'glm', family = 'binomial') 
+logRegPrediction <- predict(logRegModel, testData)
+logRegPredictionprob <- predict(logRegModel, testData, type='prob')[2]
+logRegConfMat <- confusionMatrix(logRegPrediction, testData[,"num"])
+#ROC Curve
+library(pROC)
+AUC$logReg <- roc(as.numeric(testData$num),as.numeric(as.matrix((logRegPredictionprob))))$auc
+Accuracy$logReg <- logRegConfMat$overall['Accuracy']  #found names with str(logRegConfMat)  
+
+```
+The accuracy is 0.87 and AUC 0.92 which is already quite good.
+
+
+### Random Forest model without tuning (but checked a few number of trees)
+
+```{r message=FALSE, warning=FALSE}
+library(randomForest)
+set.seed(10)
+RFModel <- randomForest(num ~ .,
+                    data=trainData, 
+                    importance=TRUE, 
+                    ntree=2000)
+#varImpPlot(RFModel)
+RFPrediction <- predict(RFModel, testData)
+RFPredictionprob = predict(RFModel,testData,type="prob")[, 2]
+
+RFConfMat <- confusionMatrix(RFPrediction, testData[,"num"])
+
+AUC$RF <- roc(as.numeric(testData$num),as.numeric(as.matrix((RFPredictionprob))))$auc
+Accuracy$RF <- RFConfMat$overall['Accuracy']  
+```
+
+### Boosted tree model with tuning (grid search)
+Boosted tree model (gbm) with adjusting learning rate and and trees.
+
+```{r  message=FALSE, warning=FALSE}
+library(caret)
+set.seed(10)
+objControl <- trainControl(method='cv', number=10,  repeats = 10)
+gbmGrid <-  expand.grid(interaction.depth =  c(1, 5, 9),
+                        n.trees = (1:30)*50,
+                        shrinkage = 0.1,
+                        n.minobsinnode =10)
+# run model
+boostModel <- train(num ~ .,data=trainData, method='gbm',
+                    trControl=objControl, tuneGrid = gbmGrid, verbose=F)
+# See model output in Appendix to get an idea how it selects best model
+#trellis.par.set(caretTheme())
+#plot(boostModel)
+boostPrediction <- predict(boostModel, testData)
+boostPredictionprob <- predict(boostModel, testData, type='prob')[2]
+boostConfMat <- confusionMatrix(boostPrediction, testData[,"num"])
+
+#ROC Curve
+AUC$boost <- roc(as.numeric(testData$num),as.numeric(as.matrix((boostPredictionprob))))$auc
+Accuracy$boost <- boostConfMat$overall['Accuracy']  
+
+```
+
+### Stochastic gradient boosting
+This method finds tuning parameters automatically. But a bit more work to prepare data.
+
+```{r  message=FALSE, warning=FALSE, eval = TRUE}
+# for this to work add names to all levels (numbers not allowed)
+feature.names=names(heart.data)
+
+for (f in feature.names) {
+  if (class(heart.data[[f]])=="factor") {
+    levels <- unique(c(heart.data[[f]]))
+    heart.data[[f]] <- factor(heart.data[[f]],
+                   labels=make.names(levels))
+  }
+}
+set.seed(10)
+inTrainRows <- createDataPartition(heart.data$num,p=0.7,list=FALSE)
+trainData2 <- heart.data[inTrainRows,]
+testData2 <-  heart.data[-inTrainRows,]
+
+
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10,
+                           ## Estimate class probabilities
+                           classProbs = TRUE,
+                           ## Evaluate performance using 
+                           ## the following function
+                           summaryFunction = twoClassSummary)
+
+set.seed(10)
+gbmModel <- train(num ~ ., data = trainData2,
+                 method = "gbm",
+                 trControl = fitControl,
+                 verbose = FALSE,
+                 tuneGrid = gbmGrid,
+                 ## Specify which metric to optimize
+                 metric = "ROC")
+gbmPrediction <- predict(gbmModel, testData2)
+gbmPredictionprob <- predict(gbmModel, testData2, type='prob')[2]
+gbmConfMat <- confusionMatrix(gbmPrediction, testData2[,"num"])
+#ROC Curve
+AUC$gbm <- roc(as.numeric(testData2$num),as.numeric(as.matrix((gbmPredictionprob))))$auc
+Accuracy$gbm <- gbmConfMat$overall['Accuracy']
+```
+
+
+
+### Support Vector Machine
+
+```{r  message=FALSE, warning=FALSE, eval = TRUE}
+set.seed(10)
+svmModel <- train(num ~ ., data = trainData2,
+                 method = "svmRadial",
+                 trControl = fitControl,
+                 preProcess = c("center", "scale"),
+                 tuneLength = 8,
+                 metric = "ROC")
+svmPrediction <- predict(svmModel, testData2)
+svmPredictionprob <- predict(svmModel, testData2, type='prob')[2]
+svmConfMat <- confusionMatrix(svmPrediction, testData2[,"num"])
+#ROC Curve
+AUC$svm <- roc(as.numeric(testData2$num),as.numeric(as.matrix((svmPredictionprob))))$auc
+Accuracy$svm <- svmConfMat$overall['Accuracy']  
+
+```
+
+## Results: Comparison of AUC and Accuracy between models
+
+```{r  message=FALSE, warning=FALSE, eval = TRUE}
+row.names <- names(Accuracy)
+col.names <- c("AUC", "Accuracy")
+cbind(as.data.frame(matrix(c(AUC,Accuracy),nrow = 5, ncol = 2,
+                           dimnames = list(row.names, col.names))))
+
+```
+
+
+> The best model is the relative simple logistic regression model with an Area under the ROC of 0.92. We can predict heart disease with an accuracy of 0.87. The Sensitivity is 0.90 and the Specificity 0.83.
+
+
+##Interpretation of logistic regression model and importance of variables from boosted tree
+The coefficients of the 'best' model given AUC and Accuracy, the logistic regression model, are the following
+```{r}
+summary(logRegModel)$coeff
+```
+The interpretation of the coefficient for sex, for example, is:
+If all predictors are held at a fixed value, the odds of getting heart disease for males (males = 1) over the odds of getting heart disease for females is exp(1.85291093) = 6.4 i.e. the odds are 540% higher.
+
+A direct comparison of the importance of each predictor is not possible for the logistic regression model. But this could be added in further analyses - comparing predictive ability of model by removing each variable seperately. Since the boosted tree model was only slightly lower, I here show the importance of the variables calculated by the boosted tree.
+
+```{r}
+boostImp =varImp(boostModel, scale = FALSE)
+row = rownames(varImp(boostModel, scale = FALSE)$importance)
+row = convert.names(row)
+rownames(boostImp$importance)=row
+plot(boostImp,main = 'Variable importance for heart failure prediction with boosted tree')
+```
+
+
+## Conclusion
+14 predictor variables from the UCI heart disease dataset are used to predict the diagnosis of heart disease (angiographic disease status). The performances of 4 different machine learning algorithms - logistic regression, boosted trees, random forest and support vector machines - are compared . 
+
+30% of the data is hold out as a testing data set that is not seen during the training stage of the data. During the training of boosted trees and support vector machines, 10-fold cross-validation is used to maximize the ROC (parameter tuning) and select the final models. 
+
+A comparison of the area under the ROC and the accuracy of the model predictions shows that logistic regression performs best (accuracy of 0.87). Tree-based methods with different tuning parameters performed slighly worse. 
+
+Nevertheless, the boosted tree model was used to compare the importance of the different variables due to the easier procedure compared to logistic regression. Having a reversable defect Thalassemia is the most important predictor in the boosted tree model, followed by asymptomatic chest pain and ST depression from exercise. 
+
+The short analysis shows the predictive capability of machine learning algorithms for heart diseases. Possible improvements can be obtained with improved data pre-processing (outliers, variances), choice of models, parameter selection, model tuning and so on.
+
+# Appendix
+## Confusion matrix output
+Logistic Regression
+```{r}
+logRegConfMat
+
+```
+
+Random Forest
+```{r}
+RFConfMat
+
+```
+
+Boosted tree
+```{r}
+boostConfMat
+```
+
+Gradient boosting
+```{r}
+gbmConfMat
+
+```
+
+Support vector machine
+```{r}
+svmConfMat
+```
+
+## Example of Model output for selection of tuning parameters
+
+```{r}
+boostModel
+
+```
+
